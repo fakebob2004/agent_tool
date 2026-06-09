@@ -146,10 +146,12 @@ Implemented:
 - JSON-RPC-over-stdio ACP transport skeleton with request/response, notification, stderr, timeout, and cleanup tests.
 - ACP message framing abstraction for JSON Lines and Content-Length transports.
 - Raw `agent acp` probe script that records client, agent, stderr, timeout, and process-exit messages to ignored JSONL.
+- Real `agent acp` initialize handshake captured from WSL Ubuntu; JSON Lines framing and current initialize params are confirmed.
 
 Still pending:
 
-- Confirmed Cursor SDK, Hook, or agent-specific CLI adapter.
+- Cursor Agent CLI login in WSL, then read-only session/prompt ACP round trip.
+- Confirmed Cursor SDK or Hook adapter.
 - Real-world Cursor command presets after interface confirmation.
 - GitHub Issue/PR control plane.
 - Reviewer and summarizer artifacts.

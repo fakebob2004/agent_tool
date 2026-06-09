@@ -5,7 +5,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any, BinaryIO, Sequence
+from typing import Any, BinaryIO, Iterable, Sequence
 
 from .acp_framing import FramingError, JsonLinesFramer, MessageFramer
 
@@ -233,3 +233,78 @@ def build_initialize_request(request_id: int | str = 1) -> JsonRpcRequest:
             },
         },
     )
+
+
+def build_new_session_request(
+    cwd: Path | str,
+    request_id: int | str = 1,
+    *,
+    mcp_servers: Sequence[dict[str, Any]] | None = None,
+    additional_directories: Sequence[Path | str] | None = None,
+) -> JsonRpcRequest:
+    params: dict[str, Any] = {
+        "cwd": str(cwd),
+        "mcpServers": list(mcp_servers or []),
+    }
+    if additional_directories:
+        params["additionalDirectories"] = [str(path) for path in additional_directories]
+    return JsonRpcRequest(id=request_id, method="session/new", params=params)
+
+
+def text_content(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text}
+
+
+def resource_link_content(
+    uri: str,
+    name: str,
+    *,
+    mime_type: str | None = None,
+    size: int | None = None,
+    description: str | None = None,
+    title: str | None = None,
+) -> dict[str, Any]:
+    block: dict[str, Any] = {
+        "type": "resource_link",
+        "uri": uri,
+        "name": name,
+    }
+    if mime_type is not None:
+        block["mimeType"] = mime_type
+    if size is not None:
+        block["size"] = size
+    if description is not None:
+        block["description"] = description
+    if title is not None:
+        block["title"] = title
+    return block
+
+
+def embedded_text_resource_content(uri: str, text: str, *, mime_type: str | None = None) -> dict[str, Any]:
+    resource: dict[str, Any] = {
+        "uri": uri,
+        "text": text,
+    }
+    if mime_type is not None:
+        resource["mimeType"] = mime_type
+    return {"type": "resource", "resource": resource}
+
+
+def build_prompt_request(
+    session_id: str,
+    prompt: str | Iterable[dict[str, Any]],
+    request_id: int | str = 1,
+    *,
+    message_id: str | None = None,
+) -> JsonRpcRequest:
+    if isinstance(prompt, str):
+        prompt_blocks = [text_content(prompt)]
+    else:
+        prompt_blocks = list(prompt)
+    params: dict[str, Any] = {
+        "sessionId": session_id,
+        "prompt": prompt_blocks,
+    }
+    if message_id is not None:
+        params["messageId"] = message_id
+    return JsonRpcRequest(id=request_id, method="session/prompt", params=params)

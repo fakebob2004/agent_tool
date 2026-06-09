@@ -20,6 +20,7 @@ from taskbus.cursor_acp import (
     JsonRpcRequest,
     build_initialize_request,
     build_new_session_request,
+    build_prompt_request,
     build_set_session_mode_request,
 )
 
@@ -109,7 +110,7 @@ def wait_for_response(
             message = messages.get(timeout=remaining)
         except Empty:
             continue
-        if message.get("id") == request_id:
+        if message.get("id") == request_id and ("result" in message or "error" in message):
             record(
                 output,
                 "probe_result",
@@ -163,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="If set with --new-session-cwd, send session/set_mode for the created session.",
     )
+    parser.add_argument(
+        "--prompt-text",
+        default=None,
+        help="If set with --new-session-cwd, send this text as a session/prompt request.",
+    )
     args = parser.parse_args(argv)
 
     output = Path(args.output)
@@ -204,7 +210,15 @@ def main(argv: list[str] | None = None) -> int:
         if initialize_response is None:
             exit_code = 2
         elif args.new_session_cwd is None:
-            exit_code = 0
+            if args.session_mode is not None or args.prompt_text is not None:
+                record(
+                    output,
+                    "probe_result",
+                    {"label": "argument_validation", "error": "--session-mode/--prompt-text require --new-session-cwd"},
+                )
+                exit_code = 64
+            else:
+                exit_code = 0
         else:
             send_request(
                 process,
@@ -215,22 +229,54 @@ def main(argv: list[str] | None = None) -> int:
             new_session_response = wait_for_response(output, messages, args.timeout, "session/new", 2)
             if new_session_response is None:
                 exit_code = 2
-            elif args.session_mode is None:
-                exit_code = 0
             else:
                 session_id = new_session_response.get("result", {}).get("sessionId")
                 if not isinstance(session_id, str) or not session_id:
-                    record(output, "probe_result", {"label": "session/set_mode", "missing_session_id": True})
+                    record(output, "probe_result", {"label": "session", "missing_session_id": True})
                     exit_code = 3
                 else:
-                    send_request(
-                        process,
-                        framer,
-                        output,
-                        build_set_session_mode_request(session_id=session_id, mode_id=args.session_mode, request_id=3),
-                    )
-                    set_mode_response = wait_for_response(output, messages, args.timeout, "session/set_mode", 3)
-                    exit_code = 0 if set_mode_response is not None else 2
+                    next_request_id = 3
+                    exit_code = 0
+                    if args.session_mode is not None:
+                        send_request(
+                            process,
+                            framer,
+                            output,
+                            build_set_session_mode_request(
+                                session_id=session_id,
+                                mode_id=args.session_mode,
+                                request_id=next_request_id,
+                            ),
+                        )
+                        set_mode_response = wait_for_response(
+                            output,
+                            messages,
+                            args.timeout,
+                            "session/set_mode",
+                            next_request_id,
+                        )
+                        if set_mode_response is None:
+                            exit_code = 2
+                        next_request_id += 1
+                    if exit_code == 0 and args.prompt_text is not None:
+                        send_request(
+                            process,
+                            framer,
+                            output,
+                            build_prompt_request(
+                                session_id=session_id,
+                                prompt=args.prompt_text,
+                                request_id=next_request_id,
+                            ),
+                        )
+                        prompt_response = wait_for_response(
+                            output,
+                            messages,
+                            args.timeout,
+                            "session/prompt",
+                            next_request_id,
+                        )
+                        exit_code = 0 if prompt_response is not None else 2
     finally:
         if process.stdin and not process.stdin.closed:
             process.stdin.close()

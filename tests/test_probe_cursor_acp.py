@@ -34,6 +34,8 @@ class CursorAcpProbeScriptTests(unittest.TestCase):
                     tmp,
                     "--session-mode",
                     "ask",
+                    "--prompt-text",
+                    "Report status only.",
                 ],
                 cwd=ROOT,
                 check=False,
@@ -54,8 +56,8 @@ class CursorAcpProbeScriptTests(unittest.TestCase):
             for row in rows
             if row["direction"] == "probe_result" and row["message"].get("received_response")
         ]
-        self.assertEqual(client_methods, ["initialize", "session/new", "session/set_mode"])
-        self.assertEqual(probe_labels, ["initialize", "session/new", "session/set_mode"])
+        self.assertEqual(client_methods, ["initialize", "session/new", "session/set_mode", "session/prompt"])
+        self.assertEqual(probe_labels, ["initialize", "session/new", "session/set_mode", "session/prompt"])
 
 
 if __name__ == "__main__":

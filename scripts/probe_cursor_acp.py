@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from taskbus.acp_framing import ContentLengthFramer, FramingError, JsonLinesFramer, MessageFramer
-from taskbus.cursor_acp import build_initialize_request
+from taskbus.cursor_acp import JsonRpcRequest, build_initialize_request, build_new_session_request
 
 
 def utc_now() -> str:
@@ -69,6 +69,24 @@ def build_framer(name: str) -> MessageFramer:
     raise ValueError(f"Unknown framing: {name}")
 
 
+def send_request(process: subprocess.Popen[bytes], framer: MessageFramer, output: Path, request: JsonRpcRequest) -> None:
+    assert process.stdin is not None
+    message = request.to_dict()
+    record(output, "client_to_agent", message)
+    process.stdin.write(framer.encode(message))
+    process.stdin.flush()
+
+
+def wait_for_message(output: Path, messages: Queue[dict[str, Any]], timeout: float, label: str) -> dict[str, Any] | None:
+    try:
+        message = messages.get(timeout=timeout)
+    except Empty:
+        record(output, "probe_result", {"label": label, "received_message": False, "timeout_seconds": timeout})
+        return None
+    record(output, "probe_result", {"label": label, "received_message": True, "message": message})
+    return message
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Probe Cursor Agent ACP without TaskBus mapping.")
     parser.add_argument(
@@ -99,6 +117,11 @@ def main(argv: list[str] | None = None) -> int:
         default=10.0,
         help="Seconds to wait for the first response after initialize.",
     )
+    parser.add_argument(
+        "--new-session-cwd",
+        default=None,
+        help="If set, send session/new with this absolute ACP cwd after initialize responds.",
+    )
     args = parser.parse_args(argv)
 
     output = Path(args.output)
@@ -118,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         record(output, "process_start_error", {"command": args.command, "error": str(exc)})
         print(str(output))
         return 127
+    record(output, "process_started", {"command": args.command, "pid": process.pid})
     assert process.stdin is not None
     assert process.stdout is not None
     assert process.stderr is not None
@@ -132,20 +156,23 @@ def main(argv: list[str] | None = None) -> int:
     stdout_thread.start()
     err_thread.start()
 
-    initialize = build_initialize_request().to_dict()
-    record(output, "client_to_agent", initialize)
-    process.stdin.write(framer.encode(initialize))
-    process.stdin.flush()
-
     exit_code = 1
     try:
-        try:
-            first_message = messages.get(timeout=args.timeout)
-            record(output, "probe_result", {"received_first_message": True, "first_message": first_message})
-            exit_code = 0
-        except Empty:
-            record(output, "probe_result", {"received_first_message": False, "timeout_seconds": args.timeout})
+        send_request(process, framer, output, build_initialize_request(request_id=1))
+        initialize_response = wait_for_message(output, messages, args.timeout, "initialize")
+        if initialize_response is None:
             exit_code = 2
+        elif args.new_session_cwd is None:
+            exit_code = 0
+        else:
+            send_request(
+                process,
+                framer,
+                output,
+                build_new_session_request(cwd=args.new_session_cwd, request_id=2),
+            )
+            new_session_response = wait_for_message(output, messages, args.timeout, "session/new")
+            exit_code = 0 if new_session_response is not None else 2
     finally:
         if process.stdin and not process.stdin.closed:
             process.stdin.close()

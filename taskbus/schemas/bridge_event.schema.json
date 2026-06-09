@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BridgeEvent",
+  "type": "object",
+  "required": ["id", "type", "message", "payload", "created_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "type": {
+      "type": "string",
+      "enum": [
+        "permission_request",
+        "semantic_question",
+        "finished",
+        "policy_decision",
+        "liaison_decision"
+      ]
+    },
+    "message": { "type": "string" },
+    "payload": { "type": "object" },
+    "created_at": { "type": "string" }
+  },
+  "additionalProperties": false
+}

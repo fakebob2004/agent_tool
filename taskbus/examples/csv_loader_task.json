@@ -1,0 +1,58 @@
+{
+  "id": "local-csv-loader-empty-input",
+  "repo": "local/example",
+  "base_ref": "main",
+  "objective": "Fix CSV loader behavior for empty input while preserving the existing public API.",
+  "context": {
+    "files": [
+      "src/data/loader.py",
+      "tests/data/test_loader.py"
+    ],
+    "notes": [
+      "Completely empty CSV files should keep the existing exception behavior.",
+      "Header-only CSV files should return an empty data frame if that matches existing project style."
+    ]
+  },
+  "scope": {
+    "allowed_paths": [
+      "src/data/**",
+      "tests/data/**"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "data/raw/**",
+      ".github/workflows/**"
+    ]
+  },
+  "acceptance": [
+    "pytest tests/data -q passes",
+    "Header-only CSV returns an empty data frame.",
+    "Completely empty CSV preserves existing public behavior."
+  ],
+  "test_commands": [
+    "pytest tests/data -q"
+  ],
+  "limits": {
+    "max_attempts": 2,
+    "max_wall_time_minutes": 45,
+    "max_changed_files": 6,
+    "max_diff_lines": 500,
+    "max_liaison_rounds": 6
+  },
+  "permissions": {
+    "network": false,
+    "install_dependencies": false,
+    "access_secrets": false,
+    "modify_git_history": false
+  },
+  "routing": {
+    "worker": "cursor",
+    "risk": "low",
+    "require_supervisor_for": [
+      "public_api_change",
+      "dependency_install",
+      "test_contract_conflict",
+      "changed_files_over_limit"
+    ]
+  }
+}

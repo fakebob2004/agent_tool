@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LiaisonDecision",
+  "type": "object",
+  "required": ["decision", "instruction_to_cursor", "escalate", "reason_summary"],
+  "properties": {
+    "decision": { "type": "string", "minLength": 1 },
+    "instruction_to_cursor": { "type": "string", "minLength": 1 },
+    "escalate": { "type": "boolean" },
+    "reason_summary": { "type": "string" }
+  },
+  "additionalProperties": true
+}

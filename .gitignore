@@ -4,4 +4,5 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 taskbus/state/*.json
+taskbus/state/*.jsonl
 docs/cursor_interface_probe*.json

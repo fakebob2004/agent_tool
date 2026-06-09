@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import json
 import subprocess
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any, Sequence
+from typing import Any, BinaryIO, Sequence
+
+from .acp_framing import FramingError, JsonLinesFramer, MessageFramer
 
 
 class AcpError(RuntimeError):
@@ -90,11 +91,13 @@ class CursorAcpSession:
         command: str | Sequence[str],
         cwd: Path | str,
         timeout_seconds: float = 10.0,
+        framer: MessageFramer | None = None,
     ) -> None:
         self.command = command
         self.cwd = Path(cwd)
         self.timeout_seconds = timeout_seconds
-        self.process: subprocess.Popen[str] | None = None
+        self.framer = framer or JsonLinesFramer()
+        self.process: subprocess.Popen[bytes] | None = None
         self._next_id = 1
         self._responses: Queue[JsonRpcResponse] = Queue()
         self._notifications: Queue[JsonRpcNotification] = Queue()
@@ -109,7 +112,6 @@ class CursorAcpSession:
             self.command,
             cwd=self.cwd,
             shell=use_shell,
-            text=True,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -133,7 +135,7 @@ class CursorAcpSession:
         process = self._require_process()
         if process.stdin is None or process.stdin.closed:
             raise AcpError("ACP stdin is closed.")
-        process.stdin.write(json.dumps(request.to_dict(), separators=(",", ":")) + "\n")
+        process.stdin.write(self.framer.encode(request.to_dict()))
         process.stdin.flush()
 
     def wait_for_response(self, request_id: int | str) -> JsonRpcResponse:
@@ -184,15 +186,12 @@ class CursorAcpSession:
     def _read_stdout(self) -> None:
         process = self._require_process()
         assert process.stdout is not None
-        for line in process.stdout:
-            stripped = line.strip()
-            if not stripped:
-                continue
+        while True:
             try:
-                data = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(data, dict):
+                data = self.framer.read(process.stdout)
+            except EOFError:
+                break
+            except FramingError:
                 continue
             try:
                 if "id" in data:
@@ -206,9 +205,9 @@ class CursorAcpSession:
         process = self._require_process()
         assert process.stderr is not None
         for line in process.stderr:
-            self._stderr_lines.put(line.rstrip("\n"))
+            self._stderr_lines.put(line.decode("utf-8", errors="replace").rstrip("\r\n"))
 
-    def _require_process(self) -> subprocess.Popen[str]:
+    def _require_process(self) -> subprocess.Popen[bytes]:
         if self.process is None:
             raise AcpError("ACP session has not been started.")
         return self.process

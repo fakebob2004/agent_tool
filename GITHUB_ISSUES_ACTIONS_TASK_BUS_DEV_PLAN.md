@@ -144,6 +144,8 @@ Implemented:
 - ACP-first interface decision document.
 - PowerShell probe script for desktop Cursor, `agent`, `cursor-agent`, and ACP availability.
 - JSON-RPC-over-stdio ACP transport skeleton with request/response, notification, stderr, timeout, and cleanup tests.
+- ACP message framing abstraction for JSON Lines and Content-Length transports.
+- Raw `agent acp` probe script that records client, agent, stderr, timeout, and process-exit messages to ignored JSONL.
 
 Still pending:
 

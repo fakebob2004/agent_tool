@@ -21,9 +21,14 @@ from .cursor_acp import (
     parse_permission_request,
     parse_session_update,
 )
+from .codex_liaison import CompactContext, DefaultLiaisonAdapter, LiaisonDecision
+from .events import BridgeEvent
 from .evaluator import collect_git_changes, evaluate_worker_result, run_test_commands
 from .prompt_builder import build_cursor_worker_prompt
 from .worker import WorkerCapabilities, WorkerMode
+
+
+SEMANTIC_QUESTION_MARKER = "TASKBUS_SEMANTIC_QUESTION:"
 
 
 CURSOR_ACP_WORKER_CAPABILITIES = WorkerCapabilities(
@@ -47,6 +52,8 @@ class CursorAcpWorker:
         setup_timeout: float = 30.0,
         prompt_timeout: float = 300.0,
         trusted_command_roots: list[str] | None = None,
+        liaison: Any | None = None,
+        max_liaison_rounds: int = 1,
         framer: MessageFramer | None = None,
     ) -> None:
         self.command = command
@@ -54,6 +61,8 @@ class CursorAcpWorker:
         self.setup_timeout = setup_timeout
         self.prompt_timeout = prompt_timeout
         self.trusted_command_roots = trusted_command_roots or []
+        self.liaison = liaison or DefaultLiaisonAdapter()
+        self.max_liaison_rounds = max_liaison_rounds
         self.framer = framer or JsonLinesFramer()
 
     def run(self, task: dict[str, Any], repo_root: Path | str, policy: AcpPermissionBroker | None = None) -> dict[str, Any]:
@@ -83,6 +92,7 @@ class CursorAcpWorker:
 
         transcript = AcpPromptTranscript()
         policy_decisions: list[dict[str, Any]] = []
+        liaison_decisions: list[dict[str, Any]] = []
         prompt_response: dict[str, Any] | None = None
         worker_status = "failed"
         error: str | None = None
@@ -138,20 +148,18 @@ class CursorAcpWorker:
                     raise TimeoutError("Timed out waiting for session/set_mode response.")
                 next_request_id += 1
 
-            _send(process, self.framer, build_prompt_request(session_id, prompt, request_id=next_request_id).to_dict())
-            prompt_response = _wait_for_response(
-                process,
-                self.framer,
-                messages,
-                self.prompt_timeout,
-                next_request_id,
-                transcript,
-                broker,
-                policy_decisions,
+            prompt_response, next_request_id = self._run_prompt_rounds(
+                process=process,
+                messages=messages,
+                session_id=session_id,
+                initial_prompt=prompt,
+                first_request_id=next_request_id,
+                transcript=transcript,
+                broker=broker,
+                policy_decisions=policy_decisions,
+                liaison_decisions=liaison_decisions,
+                task=task,
             )
-            if prompt_response is None:
-                raise TimeoutError("Timed out waiting for session/prompt response.")
-            transcript.apply_response(JsonRpcResponse.from_dict(prompt_response))
             worker_status = "completed"
         except Exception as exc:
             error = str(exc)
@@ -170,6 +178,7 @@ class CursorAcpWorker:
             "changed_files": worker_payload["changed_files"],
             "diff_lines": worker_payload["diff_lines"],
             "policy_decisions": policy_decisions,
+            "liaison_decisions": liaison_decisions,
             "unknown_acp_updates": transcript.unknown_updates,
             "unknown_agent_requests": transcript.unknown_agent_requests,
             "permission_requests": [asdict(request) for request in transcript.permission_requests],
@@ -179,6 +188,90 @@ class CursorAcpWorker:
             "error": error,
         }
 
+    def _run_prompt_rounds(
+        self,
+        *,
+        process: subprocess.Popen[bytes],
+        messages: Queue[dict[str, Any]],
+        session_id: str,
+        initial_prompt: str,
+        first_request_id: int,
+        transcript: AcpPromptTranscript,
+        broker: AcpPermissionBroker,
+        policy_decisions: list[dict[str, Any]],
+        liaison_decisions: list[dict[str, Any]],
+        task: dict[str, Any],
+    ) -> tuple[dict[str, Any], int]:
+        prompt_text = initial_prompt
+        request_id = first_request_id
+        handled_questions: set[str] = set()
+        for _round in range(self.max_liaison_rounds + 1):
+            text_start = len(transcript.text)
+            _send(process, self.framer, build_prompt_request(session_id, prompt_text, request_id=request_id).to_dict())
+            response = _wait_for_response(
+                process,
+                self.framer,
+                messages,
+                self.prompt_timeout,
+                request_id,
+                transcript,
+                broker,
+                policy_decisions,
+            )
+            if response is None:
+                raise TimeoutError("Timed out waiting for session/prompt response.")
+            transcript.apply_response(JsonRpcResponse.from_dict(response))
+            new_text = transcript.text[text_start:]
+            question = _extract_semantic_question(new_text)
+            if not question or question in handled_questions:
+                return response, request_id + 1
+            handled_questions.add(question)
+            if len(liaison_decisions) >= self.max_liaison_rounds:
+                raise RuntimeError("Semantic question exceeded max liaison rounds.")
+            decision = self._ask_liaison(task, question, transcript, liaison_decisions)
+            if decision.escalate:
+                raise RuntimeError(f"Liaison escalated semantic question: {decision.reason_summary}")
+            prompt_text = decision.instruction_to_cursor
+            request_id += 1
+        raise RuntimeError("Prompt loop exited without a final response.")
+
+    def _ask_liaison(
+        self,
+        task: dict[str, Any],
+        question: str,
+        transcript: AcpPromptTranscript,
+        liaison_decisions: list[dict[str, Any]],
+    ) -> LiaisonDecision:
+        event = BridgeEvent(
+            type="semantic_question",
+            message=question,
+            payload={
+                "question": question,
+                "default": "Preserve existing behavior unless the TaskSpec explicitly overrides it.",
+            },
+        )
+        context = CompactContext(
+            task={
+                "id": task.get("id"),
+                "objective": task.get("objective"),
+                "acceptance": task.get("acceptance", []),
+                "scope": task.get("scope", {}),
+                "limits": task.get("limits", {}),
+            },
+            current_state={
+                "status": "needs_liaison",
+                "changed_files": [],
+                "attempt": 1,
+                "liaison_rounds": len(liaison_decisions),
+            },
+            cursor_event=event.to_dict(),
+            relevant_diff="",
+            relevant_test_output=transcript.text[-4000:],
+        )
+        decision = self.liaison.answer(context)
+        liaison_decisions.append(decision.to_dict())
+        return decision
+
 
 def _test_command_allowlist(repo: Path, commands: list[str]) -> list[str]:
     allowed: list[str] = []
@@ -186,6 +279,16 @@ def _test_command_allowlist(repo: Path, commands: list[str]) -> list[str]:
         allowed.append(command)
         allowed.append(f"cd {repo.as_posix()} && {command}")
     return allowed
+
+
+def _extract_semantic_question(text: str) -> str | None:
+    marker_index = text.find(SEMANTIC_QUESTION_MARKER)
+    if marker_index < 0:
+        return None
+    question = text[marker_index + len(SEMANTIC_QUESTION_MARKER) :].strip()
+    if not question:
+        return None
+    return question.splitlines()[0].strip()
 
 
 def _send(process: subprocess.Popen[bytes], framer: MessageFramer, message: dict[str, Any]) -> None:

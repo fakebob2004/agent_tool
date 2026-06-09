@@ -17,6 +17,7 @@ from taskbus.cursor_acp import (
     build_prompt_request,
     build_set_session_mode_request,
     embedded_text_resource_content,
+    parse_permission_request,
     parse_session_update,
     resource_link_content,
     text_content,
@@ -178,6 +179,90 @@ class CursorAcpTransportTests(unittest.TestCase):
         self.assertIsNone(update.text_delta)
         with self.assertRaises(AcpProtocolError):
             parse_session_update({"jsonrpc": "2.0", "method": "other", "params": {}})
+
+    def test_prompt_transcript_keeps_structured_and_unknown_updates(self) -> None:
+        tool_call = parse_session_update(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sess_abc123def456",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "call_001",
+                        "kind": "edit",
+                        "status": "pending",
+                    },
+                },
+            }
+        )
+        plan = parse_session_update(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sess_abc123def456",
+                    "update": {
+                        "sessionUpdate": "plan",
+                        "entries": [{"content": "Run tests", "status": "pending"}],
+                    },
+                },
+            }
+        )
+        unknown = parse_session_update(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sess_abc123def456",
+                    "update": {
+                        "sessionUpdate": "future_update",
+                        "payload": {"keep": True},
+                    },
+                },
+            }
+        )
+
+        transcript = AcpPromptTranscript()
+        for update in (tool_call, plan, unknown):
+            transcript.apply_update(update)
+
+        self.assertEqual(tool_call.category, "tool_call")
+        self.assertEqual(plan.category, "plan")
+        self.assertTrue(unknown.is_unknown)
+        self.assertEqual(transcript.update_counts["tool_call"], 1)
+        self.assertEqual(transcript.tool_calls[0]["toolCallId"], "call_001")
+        self.assertEqual(transcript.plans[0]["entries"][0]["content"], "Run tests")
+        self.assertEqual(transcript.unknown_updates, [{"sessionUpdate": "future_update", "payload": {"keep": True}}])
+
+    def test_parse_permission_request(self) -> None:
+        message = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "session/request_permission",
+            "params": load_golden("request_permission_request.json"),
+        }
+        request = parse_permission_request(message)
+        transcript = AcpPromptTranscript()
+        transcript.apply_agent_request(message)
+
+        self.assertEqual(request.request_id, 0)
+        self.assertEqual(request.session_id, "sess_abc123def456")
+        self.assertEqual(request.tool_call["toolCallId"], "call_001")
+        self.assertEqual(request.options[0]["optionId"], "allow-once")
+        self.assertEqual(transcript.permission_requests[0], request)
+
+    def test_prompt_transcript_keeps_unknown_agent_requests(self) -> None:
+        message = {
+            "jsonrpc": "2.0",
+            "id": "server-1",
+            "method": "session/future_request",
+            "params": {"ok": True},
+        }
+        transcript = AcpPromptTranscript()
+        transcript.apply_agent_request(message)
+
+        self.assertEqual(transcript.unknown_agent_requests, [message])
 
     def test_request_response_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

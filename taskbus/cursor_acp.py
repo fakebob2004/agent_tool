@@ -10,6 +10,18 @@ from typing import Any, BinaryIO, Iterable, Sequence
 from .acp_framing import FramingError, JsonLinesFramer, MessageFramer
 
 
+UPDATE_CATEGORY_BY_KIND = {
+    "agent_message_chunk": "agent_message_chunk",
+    "available_commands_update": "session_info",
+    "current_mode_update": "session_info",
+    "plan": "plan",
+    "session_info_update": "session_info",
+    "tool_call": "tool_call",
+    "tool_call_update": "tool_call_update",
+    "user_message_chunk": "user_message_chunk",
+}
+
+
 class AcpError(RuntimeError):
     pass
 
@@ -90,6 +102,14 @@ class AcpSessionUpdate:
     update: dict[str, Any]
 
     @property
+    def category(self) -> str:
+        return UPDATE_CATEGORY_BY_KIND.get(self.kind, "unknown")
+
+    @property
+    def is_unknown(self) -> bool:
+        return self.category == "unknown"
+
+    @property
     def text_delta(self) -> str | None:
         if self.kind != "agent_message_chunk":
             return None
@@ -109,17 +129,51 @@ class AcpSessionUpdate:
         return title if isinstance(title, str) else None
 
 
+@dataclass(frozen=True)
+class AcpPermissionRequest:
+    request_id: int | str
+    session_id: str
+    tool_call: dict[str, Any]
+    options: list[dict[str, Any]]
+    params: dict[str, Any]
+
+
 @dataclass
 class AcpPromptTranscript:
     text: str = ""
     stop_reason: str | None = None
     updates: list[AcpSessionUpdate] = field(default_factory=list)
+    update_counts: dict[str, int] = field(default_factory=dict)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_call_updates: list[dict[str, Any]] = field(default_factory=list)
+    plans: list[dict[str, Any]] = field(default_factory=list)
+    session_info: list[dict[str, Any]] = field(default_factory=list)
+    unknown_updates: list[dict[str, Any]] = field(default_factory=list)
+    permission_requests: list[AcpPermissionRequest] = field(default_factory=list)
+    unknown_agent_requests: list[dict[str, Any]] = field(default_factory=list)
 
     def apply_update(self, update: AcpSessionUpdate) -> None:
         self.updates.append(update)
+        self.update_counts[update.kind] = self.update_counts.get(update.kind, 0) + 1
         text_delta = update.text_delta
         if text_delta is not None:
             self.text += text_delta
+        if update.category == "tool_call":
+            self.tool_calls.append(update.update)
+        elif update.category == "tool_call_update":
+            self.tool_call_updates.append(update.update)
+        elif update.category == "plan":
+            self.plans.append(update.update)
+        elif update.category == "session_info":
+            self.session_info.append(update.update)
+        elif update.is_unknown:
+            self.unknown_updates.append(update.update)
+
+    def apply_agent_request(self, message: dict[str, Any]) -> None:
+        if message.get("method") == "session/request_permission":
+            self.permission_requests.append(parse_permission_request(message))
+        elif "method" in message and "id" in message:
+            self.unknown_agent_requests.append(message)
 
     def apply_response(self, response: JsonRpcResponse) -> None:
         if isinstance(response.result, dict):
@@ -149,6 +203,35 @@ def parse_session_update(message: JsonRpcNotification | dict[str, Any]) -> AcpSe
     if not isinstance(kind, str) or not kind:
         raise AcpProtocolError("session/update missing sessionUpdate kind.")
     return AcpSessionUpdate(session_id=session_id, kind=kind, update=update)
+
+
+def parse_permission_request(message: dict[str, Any]) -> AcpPermissionRequest:
+    if message.get("jsonrpc") != "2.0":
+        raise AcpProtocolError("Permission request missing jsonrpc='2.0'.")
+    if message.get("method") != "session/request_permission":
+        raise AcpProtocolError("Expected session/request_permission.")
+    request_id = message.get("id")
+    if request_id is None:
+        raise AcpProtocolError("Permission request missing id.")
+    params = message.get("params")
+    if not isinstance(params, dict):
+        raise AcpProtocolError("Permission request params must be an object.")
+    session_id = params.get("sessionId")
+    tool_call = params.get("toolCall")
+    options = params.get("options")
+    if not isinstance(session_id, str) or not session_id:
+        raise AcpProtocolError("Permission request missing sessionId.")
+    if not isinstance(tool_call, dict):
+        raise AcpProtocolError("Permission request missing toolCall.")
+    if not isinstance(options, list) or not all(isinstance(item, dict) for item in options):
+        raise AcpProtocolError("Permission request options must be a list of objects.")
+    return AcpPermissionRequest(
+        request_id=request_id,
+        session_id=session_id,
+        tool_call=tool_call,
+        options=options,
+        params=params,
+    )
 
 
 class CursorAcpSession:

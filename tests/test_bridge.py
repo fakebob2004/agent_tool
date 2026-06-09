@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from taskbus.bridge import TaskSpecError, load_task, run_dry, validate_task
+from taskbus.bridge import TaskSpecError, load_task, run_dry, run_worker, validate_task
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,15 @@ class BridgeTests(unittest.TestCase):
             saved = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["task_id"], task["id"])
             self.assertGreaterEqual(len(saved["events"]), 3)
+
+    def test_worker_command_can_complete(self) -> None:
+        task = load_task(SAMPLE_TASK)
+        command = [sys.executable, "taskbus/examples/smoke_worker.py"]
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_worker(task, tmp, command, ROOT)
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["mode"], "worker")
+        self.assertTrue(result["evaluation"]["passed"])
 
 
 if __name__ == "__main__":

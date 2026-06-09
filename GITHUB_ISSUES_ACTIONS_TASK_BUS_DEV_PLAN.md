@@ -127,6 +127,24 @@ Acceptance:
 4. Replace dry-run worker with real Cursor session adapter.
 5. Add evaluator gates before any GitHub integration.
 
+## Current Implementation Checkpoint
+
+Implemented:
+
+- Baseline git repository and dry-run MVP.
+- Evaluator gates for path scope, changed-file count, diff size, and test results.
+- Compact liaison adapter with structured decision parsing.
+- Subprocess worker adapter for Cursor-compatible commands that emit `TASKBUS_EVENT:{json}` lines.
+- Stdin reply path from bridge decisions back to the worker.
+- Smoke worker example for local protocol testing.
+
+Still pending:
+
+- Real Cursor CLI prompt contract hardening.
+- Real-world Cursor command presets.
+- GitHub Issue/PR control plane.
+- Reviewer and summarizer artifacts.
+
 ## Non-Goals For The First Slice
 
 - No MCP adapter.

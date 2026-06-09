@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from taskbus.acp_framing import FramingError, JsonLinesFramer, MessageFramer
+from taskbus.acp_permission import AcpPermissionBroker
 from taskbus.cursor_acp import (
     AcpPromptTranscript,
     JsonRpcRequest,
@@ -27,6 +28,7 @@ from taskbus.cursor_acp import (
     build_new_session_request,
     build_prompt_request,
     build_set_session_mode_request,
+    parse_permission_request,
     parse_session_update,
 )
 
@@ -115,13 +117,24 @@ def send_request(process: subprocess.Popen[bytes], framer: MessageFramer, output
     process.stdin.flush()
 
 
+def send_message(process: subprocess.Popen[bytes], framer: MessageFramer, output: Path, message: dict[str, Any]) -> None:
+    assert process.stdin is not None
+    record(output, "client_to_agent", message)
+    process.stdin.write(framer.encode(message))
+    process.stdin.flush()
+
+
 def wait_for_response(
+    process: subprocess.Popen[bytes],
+    framer: MessageFramer,
     output: Path,
     messages: Queue[dict[str, Any]],
     timeout: float,
     label: str,
     request_id: int | str,
     transcript: AcpPromptTranscript | None = None,
+    permission_broker: AcpPermissionBroker | None = None,
+    policy_decisions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     deadline = time.monotonic() + timeout
     while True:
@@ -151,6 +164,26 @@ def wait_for_response(
         elif "id" in message and "method" in message and transcript is not None:
             try:
                 transcript.apply_agent_request(message)
+                if message.get("method") == "session/request_permission" and permission_broker is not None:
+                    permission_request = parse_permission_request(message)
+                    decision = permission_broker.decide(permission_request)
+                    policy_record = {
+                        "request_id": permission_request.request_id,
+                        "tool_kind": permission_request.tool_call.get("kind"),
+                        "tool_title": permission_request.tool_call.get("title"),
+                        "action": decision.action,
+                        "reason": decision.reason,
+                        "option_id": decision.option_id,
+                    }
+                    if policy_decisions is not None:
+                        policy_decisions.append(policy_record)
+                    record(output, "policy_decision", policy_record)
+                    send_message(
+                        process,
+                        framer,
+                        output,
+                        decision.json_rpc_response(permission_request.request_id),
+                    )
             except Exception as exc:  # pragma: no cover - defensive transcript capture
                 record(output, "parse_error", {"label": label, "error": str(exc), "message": message})
 
@@ -235,15 +268,21 @@ def run_smoke(args: argparse.Namespace) -> int:
     threading.Thread(target=stderr_thread, args=(process.stderr, output), daemon=True).start()
 
     transcript = AcpPromptTranscript()
+    policy_decisions: list[dict[str, Any]] = []
+    permission_broker = (
+        AcpPermissionBroker(repo, allowed_paths=["calc.py"], test_commands=[f"cd {repo.as_posix()} && pytest", "pytest"])
+        if args.auto_permissions
+        else None
+    )
     prompt_response: dict[str, Any] | None = None
     exit_code = 1
     try:
         send_request(process, framer, output, build_initialize_request(request_id=1))
-        if wait_for_response(output, messages, args.timeout, "initialize", 1, transcript) is None:
+        if wait_for_response(process, framer, output, messages, args.timeout, "initialize", 1, transcript) is None:
             return 2
 
         send_request(process, framer, output, build_new_session_request(cwd=str(repo), request_id=2))
-        new_session_response = wait_for_response(output, messages, args.timeout, "session/new", 2, transcript)
+        new_session_response = wait_for_response(process, framer, output, messages, args.timeout, "session/new", 2, transcript)
         if new_session_response is None:
             return 2
         session_id = new_session_response.get("result", {}).get("sessionId")
@@ -258,7 +297,7 @@ def run_smoke(args: argparse.Namespace) -> int:
                 output,
                 build_set_session_mode_request(session_id=session_id, mode_id=args.session_mode, request_id=3),
             )
-            if wait_for_response(output, messages, args.timeout, "session/set_mode", 3, transcript) is None:
+            if wait_for_response(process, framer, output, messages, args.timeout, "session/set_mode", 3, transcript) is None:
                 return 2
             prompt_request_id = 4
         else:
@@ -271,12 +310,16 @@ def run_smoke(args: argparse.Namespace) -> int:
             build_prompt_request(session_id=session_id, prompt=PROMPT, request_id=prompt_request_id),
         )
         prompt_response = wait_for_response(
+            process,
+            framer,
             output,
             messages,
             args.prompt_timeout,
             "session/prompt",
             prompt_request_id,
             transcript,
+            permission_broker,
+            policy_decisions,
         )
         exit_code = 0 if prompt_response is not None else 2
         return exit_code
@@ -290,6 +333,7 @@ def run_smoke(args: argparse.Namespace) -> int:
             "prompt_response": prompt_response,
             "transcript": {
                 "text": transcript.text,
+                "thoughts": transcript.thoughts,
                 "stop_reason": transcript.stop_reason,
                 "update_counts": transcript.update_counts,
                 "tool_calls": transcript.tool_calls,
@@ -300,6 +344,7 @@ def run_smoke(args: argparse.Namespace) -> int:
                 "permission_requests": [asdict(request) for request in transcript.permission_requests],
                 "unknown_agent_requests": transcript.unknown_agent_requests,
             },
+            "policy_decisions": policy_decisions,
             "verification": verification,
             "passed": (
                 exit_code == 0
@@ -320,6 +365,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session-mode", default=None, help="Optional ACP session mode to set before prompting.")
     parser.add_argument("--timeout", type=float, default=20.0, help="Seconds to wait for setup responses.")
     parser.add_argument("--prompt-timeout", type=float, default=180.0, help="Seconds to wait for prompt completion.")
+    parser.add_argument(
+        "--auto-permissions",
+        action="store_true",
+        help="Reply to session/request_permission using the static ACP permission broker.",
+    )
     parser.add_argument("--output", default="taskbus/state/cursor_acp_edit_smoke.jsonl", help="Raw ignored JSONL log.")
     parser.add_argument(
         "--summary-output",

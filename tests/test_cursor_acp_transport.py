@@ -235,6 +235,27 @@ class CursorAcpTransportTests(unittest.TestCase):
         self.assertEqual(transcript.plans[0]["entries"][0]["content"], "Run tests")
         self.assertEqual(transcript.unknown_updates, [{"sessionUpdate": "future_update", "payload": {"keep": True}}])
 
+    def test_prompt_transcript_tracks_agent_thought_chunks(self) -> None:
+        thought = parse_session_update(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sess_abc123def456",
+                    "update": {
+                        "sessionUpdate": "agent_thought_chunk",
+                        "content": {"type": "text", "text": "The shell was rejected."},
+                    },
+                },
+            }
+        )
+        transcript = AcpPromptTranscript()
+        transcript.apply_update(thought)
+
+        self.assertEqual(thought.category, "agent_thought_chunk")
+        self.assertEqual(transcript.thoughts, "The shell was rejected.")
+        self.assertEqual(transcript.unknown_updates, [])
+
     def test_parse_permission_request(self) -> None:
         message = {
             "jsonrpc": "2.0",

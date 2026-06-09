@@ -154,6 +154,66 @@ Cursor exposed tool approval as a JSON-RPC request from agent to client:
 }
 ```
 
+## Static Policy Response
+
+The thin static permission broker was then tested against the same smoke. It replied to the first `pytest` permission request with:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 0,
+  "result": {
+    "outcome": {
+      "outcome": "selected",
+      "optionId": "allow-once"
+    }
+  }
+}
+```
+
+This allowed the same Cursor ACP session to continue and finish:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "stopReason": "end_turn"
+  }
+}
+```
+
+Observed policy decisions from the auto-permission run:
+
+```json
+[
+  {
+    "action": "allow",
+    "tool_title": "`cd /tmp/taskbus-acp-smoke && pytest`",
+    "option_id": "allow-once"
+  },
+  {
+    "action": "deny",
+    "tool_title": "`cd /tmp/taskbus-acp-smoke && python3 -m pytest`",
+    "option_id": "reject-once"
+  },
+  {
+    "action": "deny",
+    "tool_title": "`pip install pytest -q && cd /tmp/taskbus-acp-smoke && pytest`",
+    "reason": "Command matches a denied shell pattern.",
+    "option_id": "reject-once"
+  }
+]
+```
+
+The auto-permission run still did not fully pass because pytest is not installed in the WSL Python environment:
+
+```text
+/usr/bin/python3: No module named pytest
+```
+
+The final repository diff remained constrained to `calc.py`.
+
 ## Answers
 
 1. Can Cursor ACP reliably modify files in the requested `cwd`?
@@ -163,8 +223,8 @@ Cursor exposed tool approval as a JSON-RPC request from agent to client:
    `YES`. It used `session/request_permission` with `toolCall` and `options`.
 
 3. Can TaskBus static policy answer and resume the same session?
-   `NOT YET VERIFIED`. This is the next checkpoint: implement a permission broker and respond to request id `0`.
+   `YES`. The broker selected `allow-once` for the first pytest request, rejected later non-allowlisted commands, and Cursor returned `stopReason=end_turn`.
 
 ## Next Boundary
 
-Implement the thinnest `AcpPermissionBroker` that can select `allow-once` or `reject-once` from `session/request_permission` based on static policy. Do not connect Codex liaison or GitHub yet.
+Promote the probe path into a guarded `CursorAcpWorker` adapter. Keep it read/write scoped, run Evaluator after Cursor stops, and do not connect Codex liaison or GitHub yet.

@@ -12,6 +12,7 @@ from .acp_framing import FramingError, JsonLinesFramer, MessageFramer
 
 UPDATE_CATEGORY_BY_KIND = {
     "agent_message_chunk": "agent_message_chunk",
+    "agent_thought_chunk": "agent_thought_chunk",
     "available_commands_update": "session_info",
     "current_mode_update": "session_info",
     "plan": "plan",
@@ -128,6 +129,18 @@ class AcpSessionUpdate:
         title = self.update.get("title")
         return title if isinstance(title, str) else None
 
+    @property
+    def thought_delta(self) -> str | None:
+        if self.kind != "agent_thought_chunk":
+            return None
+        content = self.update.get("content")
+        if not isinstance(content, dict):
+            return None
+        if content.get("type") != "text":
+            return None
+        text = content.get("text")
+        return text if isinstance(text, str) else None
+
 
 @dataclass(frozen=True)
 class AcpPermissionRequest:
@@ -141,6 +154,7 @@ class AcpPermissionRequest:
 @dataclass
 class AcpPromptTranscript:
     text: str = ""
+    thoughts: str = ""
     stop_reason: str | None = None
     updates: list[AcpSessionUpdate] = field(default_factory=list)
     update_counts: dict[str, int] = field(default_factory=dict)
@@ -158,6 +172,9 @@ class AcpPromptTranscript:
         text_delta = update.text_delta
         if text_delta is not None:
             self.text += text_delta
+        thought_delta = update.thought_delta
+        if thought_delta is not None:
+            self.thoughts += thought_delta
         if update.category == "tool_call":
             self.tool_calls.append(update.update)
         elif update.category == "tool_call_update":

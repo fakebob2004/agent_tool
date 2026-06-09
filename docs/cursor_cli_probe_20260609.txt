@@ -1,0 +1,41 @@
+# Cursor CLI Probe - 2026-06-09
+
+Workspace: D:\PhD\agent_tool
+
+## Commands Run
+
+```powershell
+where.exe cursor
+where.exe agent
+cursor --version
+cursor --help
+Get-Command cursor | Format-List *
+Get-Command agent -ErrorAction SilentlyContinue | Format-List *
+cursor agent --version
+cursor agent --help
+```
+
+## Findings
+
+- `where.exe cursor` did not find a plain PATH executable.
+- PowerShell resolves `cursor` to:
+  `C:\Users\fakebob2004\AppData\Local\Programs\cursor\resources\app\bin\cursor.cmd`
+- `where.exe agent` and `Get-Command agent` did not find an independent `agent` command.
+- `cursor --version` returned Cursor `3.6.31`, commit `81fcf2931d7687b4ff3f3017858d0c6dee7e2a60`, `x64`.
+- `cursor --help` shows a top-level `agent` subcommand:
+  `agent        Start the Cursor agent in your terminal.`
+- `cursor agent --version` returned the same version block as `cursor --version`.
+- `cursor agent --help` returned the top-level `cursor.exe` help, not agent-specific headless/help options.
+- The installed Cursor tree contains `cursor-agent-exec`, `cursor-agent-worker`, and `agent-sdk` assets, but this probe did not confirm a stable documented command-line output format for `cursor agent`.
+
+## Local Interpretation
+
+Do not treat `cursor.cmd` as a confirmed structured Agent CLI yet. Keep the current generic external worker adapter, but do not hard-code Cursor Agent arguments until an agent-specific help or SDK/Hook entrypoint is confirmed.
+
+Recommended next adapters:
+
+1. Cursor SDK adapter, if a supported local SDK entrypoint is available.
+2. Cursor Hooks adapter for tool approval and policy decisions.
+3. Cursor CLI batch adapter, if headless flags can be confirmed.
+
+Until then, use `TASKBUS_EVENT` only as a registered scripted-worker protocol for smoke tests and compatible wrappers.

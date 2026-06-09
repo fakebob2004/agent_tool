@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
+import secrets
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol, Sequence
+from uuid import uuid4
 
 from .events import BridgeEvent
 
 TASKBUS_EVENT_PREFIX = "TASKBUS_EVENT:"
+TASKBUS_PROTOCOL = "taskbus-worker-v1"
 
 
 class CursorSession(Protocol):
@@ -65,15 +69,29 @@ class SubprocessCursorSession:
         cwd: Path | str,
         initial_prompt: str = "",
         timeout_seconds: int | None = None,
+        secure_event_channel: bool = True,
     ) -> None:
         self.command = command
         self.cwd = Path(cwd)
         self.initial_prompt = initial_prompt
         self.timeout_seconds = timeout_seconds
         self.process: subprocess.Popen[str] | None = None
+        self.secure_event_channel = secure_event_channel
+        self.session_id = str(uuid4())
+        self.nonce = secrets.token_urlsafe(24)
+        self._last_sequence = 0
 
     def events(self) -> Iterator[BridgeEvent]:
         use_shell = isinstance(self.command, str)
+        env = dict(os.environ)
+        if self.secure_event_channel:
+            env.update(
+                {
+                    "TASKBUS_PROTOCOL": TASKBUS_PROTOCOL,
+                    "TASKBUS_SESSION_ID": self.session_id,
+                    "TASKBUS_NONCE": self.nonce,
+                }
+            )
         self.process = subprocess.Popen(
             self.command,
             cwd=self.cwd,
@@ -82,6 +100,7 @@ class SubprocessCursorSession:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=env,
         )
 
         if self.initial_prompt:
@@ -90,9 +109,15 @@ class SubprocessCursorSession:
         emitted_finished = False
         assert self.process.stdout is not None
         for line in self.process.stdout:
-            event = parse_worker_event_line(line)
+            event = parse_worker_event_line(
+                line,
+                session_id=self.session_id if self.secure_event_channel else None,
+                nonce=self.nonce if self.secure_event_channel else None,
+                min_sequence=self._last_sequence + 1 if self.secure_event_channel else None,
+            )
             if event is None:
                 continue
+            self._last_sequence += 1
             emitted_finished = emitted_finished or event.is_finished
             yield event
 
@@ -151,13 +176,30 @@ class SubprocessCursorSession:
                 stream.close()
 
 
-def parse_worker_event_line(line: str) -> BridgeEvent | None:
+def parse_worker_event_line(
+    line: str,
+    session_id: str | None = None,
+    nonce: str | None = None,
+    min_sequence: int | None = None,
+) -> BridgeEvent | None:
     stripped = line.strip()
     if not stripped.startswith(TASKBUS_EVENT_PREFIX):
         return None
 
     raw = stripped[len(TASKBUS_EVENT_PREFIX) :].strip()
     data: dict[str, Any] = json.loads(raw)
+    if session_id is not None or nonce is not None:
+        if data.get("protocol") != TASKBUS_PROTOCOL:
+            return None
+        if data.get("session_id") != session_id:
+            return None
+        if data.get("nonce") != nonce:
+            return None
+        sequence = data.get("sequence")
+        if not isinstance(sequence, int):
+            return None
+        if min_sequence is not None and sequence < min_sequence:
+            return None
     return BridgeEvent(
         type=data["type"],
         message=str(data.get("message", "")),

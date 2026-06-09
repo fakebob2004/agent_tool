@@ -137,11 +137,15 @@ Implemented:
 - Subprocess worker adapter for Cursor-compatible commands that emit `TASKBUS_EVENT:{json}` lines.
 - Stdin reply path from bridge decisions back to the worker.
 - Smoke worker example for local protocol testing.
+- Cursor CLI probe document for the local Windows install.
+- Worker capability model for batch vs interactive routing.
+- Cursor worker prompt contract and prompt builder.
+- Session/nonce/sequence checks for scripted worker events.
 
 Still pending:
 
-- Real Cursor CLI prompt contract hardening.
-- Real-world Cursor command presets.
+- Confirmed Cursor SDK, Hook, or agent-specific CLI adapter.
+- Real-world Cursor command presets after interface confirmation.
 - GitHub Issue/PR control plane.
 - Reviewer and summarizer artifacts.
 

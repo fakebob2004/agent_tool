@@ -74,8 +74,8 @@ def run_worker(
         mode="worker",
         repo_root=repo_root,
         remaining_risks=[
-            "Worker output must emit explicit TASKBUS_EVENT JSON lines.",
-            "Full Cursor CLI prompt contract still needs real-world hardening.",
+            "Worker output must emit authenticated TASKBUS_EVENT JSON lines.",
+            "Cursor SDK, Hooks, or agent-specific CLI adapter still needs confirmation.",
         ],
     )
 

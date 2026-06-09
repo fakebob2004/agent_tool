@@ -141,6 +141,9 @@ Implemented:
 - Worker capability model for batch vs interactive routing.
 - Cursor worker prompt contract and prompt builder.
 - Session/nonce/sequence checks for scripted worker events.
+- ACP-first interface decision document.
+- PowerShell probe script for desktop Cursor, `agent`, `cursor-agent`, and ACP availability.
+- JSON-RPC-over-stdio ACP transport skeleton with request/response, notification, stderr, timeout, and cleanup tests.
 
 Still pending:
 

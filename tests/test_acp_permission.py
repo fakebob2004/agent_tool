@@ -48,6 +48,40 @@ class AcpPermissionBrokerTests(unittest.TestCase):
             },
         )
 
+    def test_allows_trusted_python_pytest_command(self) -> None:
+        request = parse_permission_request(
+            permission_message(
+                {
+                    "title": "`/mnt/d/PhD/agent_tool/.venv-smoke/bin/python -B -m pytest -q`",
+                    "kind": "execute",
+                    "status": "pending",
+                }
+            )
+        )
+        decision = AcpPermissionBroker(
+            "/tmp/taskbus-acp-smoke",
+            trusted_command_roots=["/mnt/d/PhD/agent_tool/.venv-smoke/bin"],
+        ).decide(request)
+
+        self.assertEqual(decision.action, "allow")
+
+    def test_denies_untrusted_python_pytest_command(self) -> None:
+        request = parse_permission_request(
+            permission_message(
+                {
+                    "title": "`/tmp/random/bin/python -m pytest -q`",
+                    "kind": "execute",
+                    "status": "pending",
+                }
+            )
+        )
+        decision = AcpPermissionBroker(
+            "/tmp/taskbus-acp-smoke",
+            trusted_command_roots=["/mnt/d/PhD/agent_tool/.venv-smoke/bin"],
+        ).decide(request)
+
+        self.assertEqual(decision.action, "deny")
+
     def test_denies_dependency_install(self) -> None:
         request = parse_permission_request(
             permission_message(

@@ -20,7 +20,7 @@ def add(a, b):
     pass
 ```
 
-Prompt sent to Cursor ACP:
+Initial prompt sent to Cursor ACP:
 
 ```text
 Implement add() in calc.py.
@@ -29,9 +29,21 @@ Run pytest.
 Stop after the test passes.
 ```
 
+The completed pytest smoke uses an explicit isolated interpreter:
+
+```text
+/mnt/d/PhD/agent_tool/.venv-smoke/bin/python -m pytest -q
+```
+
+The current smoke script now emits the stricter form below to avoid bytecode cache noise:
+
+```text
+/mnt/d/PhD/agent_tool/.venv-smoke/bin/python -B -m pytest -q
+```
+
 ## Result
 
-Status: `PARTIAL`
+Status: `PASS` for the isolated pytest interpreter smoke.
 
 Cursor successfully edited the requested file and did not modify the test file:
 
@@ -52,10 +64,27 @@ Observed post-smoke git state:
  M calc.py
 ```
 
-The prompt did not complete because Cursor requested permission to run `pytest`, and this checkpoint intentionally does not yet implement a permission broker. Independent verification also found that the WSL Python environment does not currently provide pytest:
+The original prompt did not complete because Cursor requested permission to run `pytest`, and the first checkpoint intentionally did not yet implement a permission broker. Independent verification also found that the WSL system Python environment does not provide pytest:
 
 ```text
 /usr/bin/python3: No module named pytest
+```
+
+That environment blocker was closed by creating a project-local ignored virtual environment at `.venv-smoke/` and running pytest through its absolute interpreter path. The verified run returned:
+
+```json
+{
+  "stopReason": "end_turn",
+  "changed_files": [
+    "calc.py"
+  ],
+  "pytest": {
+    "returncode": 0,
+    "stdout": ".                                                                        [100%]\n1 passed in 0.01s\n",
+    "stderr": ""
+  },
+  "passed": true
+}
 ```
 
 ## Update Types
@@ -206,13 +235,23 @@ Observed policy decisions from the auto-permission run:
 ]
 ```
 
-The auto-permission run still did not fully pass because pytest is not installed in the WSL Python environment:
+The first auto-permission run did not fully pass because pytest was not installed in the WSL system Python environment:
 
 ```text
 /usr/bin/python3: No module named pytest
 ```
 
-The final repository diff remained constrained to `calc.py`.
+The isolated-interpreter run then completed successfully. The broker allowed exactly the configured test command:
+
+```json
+{
+  "action": "allow",
+  "tool_title": "`/mnt/d/PhD/agent_tool/.venv-smoke/bin/python -m pytest -q`",
+  "option_id": "allow-once"
+}
+```
+
+The final repository diff remained constrained to `calc.py`. The script has since been tightened to request `python -B -m pytest -q`; that exact `-B` variant still needs a live rerun because the 2026-06-09 rerun was blocked by Codex usage limits.
 
 ## Answers
 

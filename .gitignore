@@ -7,3 +7,4 @@ taskbus/state/*.json
 taskbus/state/*.jsonl
 docs/cursor_interface_probe*.json
 _refs/
+.venv-smoke/

@@ -46,12 +46,14 @@ class CursorAcpWorker:
         session_mode: str | None = "agent",
         setup_timeout: float = 30.0,
         prompt_timeout: float = 300.0,
+        trusted_command_roots: list[str] | None = None,
         framer: MessageFramer | None = None,
     ) -> None:
         self.command = command
         self.session_mode = session_mode
         self.setup_timeout = setup_timeout
         self.prompt_timeout = prompt_timeout
+        self.trusted_command_roots = trusted_command_roots or []
         self.framer = framer or JsonLinesFramer()
 
     def run(self, task: dict[str, Any], repo_root: Path | str, policy: AcpPermissionBroker | None = None) -> dict[str, Any]:
@@ -61,6 +63,7 @@ class CursorAcpWorker:
             repo,
             allowed_paths=[str(path) for path in task.get("scope", {}).get("allowed_paths", [])],
             test_commands=_test_command_allowlist(repo, [str(command) for command in task.get("test_commands", [])]),
+            trusted_command_roots=self.trusted_command_roots,
         )
 
         process = subprocess.Popen(

@@ -37,10 +37,12 @@ class AcpPermissionBroker:
         *,
         allowed_paths: list[str] | None = None,
         test_commands: list[str] | None = None,
+        trusted_command_roots: list[str] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         repo_posix = self.repo_root.as_posix()
         self.allowed_paths = tuple(allowed_paths or ["**"])
+        self.trusted_command_roots = tuple(root.rstrip("/") for root in (trusted_command_roots or []))
         self.test_commands = tuple(
             test_commands
             or [
@@ -82,9 +84,22 @@ class AcpPermissionBroker:
             return self._deny(request, "Execute request did not expose a command.")
         if _is_dangerous_command(normalized):
             return self._deny(request, "Command matches a denied shell pattern.")
-        if normalized in self.test_commands or normalized in ("git status", "git diff"):
+        if (
+            normalized in self.test_commands
+            or normalized in ("git status", "git diff")
+            or self._is_trusted_python_pytest(normalized)
+        ):
             return self._allow(request, "Command matches the ACP safe command allow-list.")
         return self._deny(request, f"Command is not in the ACP safe command allow-list: {normalized}")
+
+    def _is_trusted_python_pytest(self, command: str) -> bool:
+        direct = _trusted_python_pytest_command(command, self.trusted_command_roots)
+        if direct:
+            return True
+        repo_prefix = f"cd {self.repo_root.as_posix()} && "
+        if command.startswith(repo_prefix):
+            return _trusted_python_pytest_command(command[len(repo_prefix) :], self.trusted_command_roots)
+        return False
 
     def _path_allowed(self, path: str) -> bool:
         normalized = _normalize_path(path)
@@ -161,3 +176,25 @@ def _is_dangerous_command(command: str) -> bool:
     )
     parts = [part.strip() for part in command.split("&&")]
     return any(fnmatch(part, pattern) for part in parts for pattern in denied_patterns)
+
+
+def _trusted_python_pytest_command(command: str, trusted_roots: tuple[str, ...]) -> bool:
+    parts = command.split()
+    if len(parts) not in (3, 4, 5):
+        return False
+    python = parts[0]
+    remainder = parts[1:]
+    if remainder and remainder[0] == "-B":
+        remainder = remainder[1:]
+    if len(remainder) not in (2, 3):
+        return False
+    flag, module = remainder[:2]
+    if flag != "-m" or module != "pytest":
+        return False
+    if len(remainder) == 3 and remainder[2] != "-q":
+        return False
+    python_path = PurePosixPath(python.replace("\\", "/"))
+    if not python_path.is_absolute():
+        return False
+    parent = python_path.parent.as_posix().rstrip("/")
+    return any(parent == root or parent.startswith(root + "/") for root in trusted_roots)

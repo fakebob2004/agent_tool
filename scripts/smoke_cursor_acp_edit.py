@@ -33,9 +33,10 @@ from taskbus.cursor_acp import (
 )
 
 
-PROMPT = """Implement add() in calc.py.
+PROMPT_TEMPLATE = """Implement add() in calc.py.
 Modify no other files.
-Run pytest.
+Run this exact test command:
+{test_command}
 Stop after the test passes."""
 
 
@@ -201,12 +202,12 @@ def wait_for_response(
             return message
 
 
-def verify_repo(repo: Path) -> dict[str, Any]:
+def verify_repo(repo: Path, python: str) -> dict[str, Any]:
     status = run_command(["git", "status", "--short"], repo)
     diff_files = run_command(["git", "diff", "--name-only"], repo)
     calc_diff = run_command(["git", "diff", "--", "calc.py"], repo)
     test_diff = run_command(["git", "diff", "--", "test_calc.py"], repo)
-    pytest = run_command([sys.executable, "-m", "pytest", "-q"], repo)
+    pytest = run_command([python, "-B", "-m", "pytest", "-q"], repo)
     changed_files = [line for line in diff_files.stdout.splitlines() if line.strip()]
     return {
         "git_status": status.stdout,
@@ -220,6 +221,7 @@ def verify_repo(repo: Path) -> dict[str, Any]:
         },
         "passed": (
             status.returncode == 0
+            and status.stdout == " M calc.py\n"
             and diff_files.returncode == 0
             and changed_files == ["calc.py"]
             and bool(calc_diff.stdout.strip())
@@ -244,6 +246,8 @@ def close_process(process: subprocess.Popen[bytes], output: Path) -> None:
 
 def run_smoke(args: argparse.Namespace) -> int:
     repo = Path(args.repo)
+    python = str(Path(args.python)) if args.python else sys.executable
+    test_command = f"{python} -B -m pytest -q"
     output = Path(args.output)
     summary_output = Path(args.summary_output)
     if output.exists():
@@ -270,7 +274,19 @@ def run_smoke(args: argparse.Namespace) -> int:
     transcript = AcpPromptTranscript()
     policy_decisions: list[dict[str, Any]] = []
     permission_broker = (
-        AcpPermissionBroker(repo, allowed_paths=["calc.py"], test_commands=[f"cd {repo.as_posix()} && pytest", "pytest"])
+        AcpPermissionBroker(
+            repo,
+            allowed_paths=["calc.py"],
+            test_commands=[
+                test_command,
+                f"{python} -m pytest",
+                f"{python} -B -m pytest",
+                f"cd {repo.as_posix()} && {test_command}",
+                f"cd {repo.as_posix()} && {python} -m pytest",
+                f"cd {repo.as_posix()} && {python} -B -m pytest",
+            ],
+            trusted_command_roots=[Path(python).parent.as_posix()],
+        )
         if args.auto_permissions
         else None
     )
@@ -307,7 +323,11 @@ def run_smoke(args: argparse.Namespace) -> int:
             process,
             framer,
             output,
-            build_prompt_request(session_id=session_id, prompt=PROMPT, request_id=prompt_request_id),
+            build_prompt_request(
+                session_id=session_id,
+                prompt=PROMPT_TEMPLATE.format(test_command=test_command),
+                request_id=prompt_request_id,
+            ),
         )
         prompt_response = wait_for_response(
             process,
@@ -325,11 +345,13 @@ def run_smoke(args: argparse.Namespace) -> int:
         return exit_code
     finally:
         close_process(process, output)
-        verification = verify_repo(repo)
+        verification = verify_repo(repo, python)
         if prompt_response is not None:
             transcript.apply_response(JsonRpcResponse.from_dict(prompt_response))
         summary = {
             "repo": str(repo),
+            "python": python,
+            "test_command": test_command,
             "prompt_response": prompt_response,
             "transcript": {
                 "text": transcript.text,
@@ -365,6 +387,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session-mode", default=None, help="Optional ACP session mode to set before prompting.")
     parser.add_argument("--timeout", type=float, default=20.0, help="Seconds to wait for setup responses.")
     parser.add_argument("--prompt-timeout", type=float, default=180.0, help="Seconds to wait for prompt completion.")
+    parser.add_argument(
+        "--python",
+        default=sys.executable,
+        help="Python interpreter used for pytest verification and allowed test command construction.",
+    )
     parser.add_argument(
         "--auto-permissions",
         action="store_true",

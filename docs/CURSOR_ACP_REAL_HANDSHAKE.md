@@ -136,6 +136,48 @@ Sensitive values are redacted. The full model list is intentionally omitted beca
 }
 ```
 
+## Set Mode Request
+
+Captured after `session/new`. This switches the created session from the default `agent` mode to read-only `ask` mode before any future prompt probe.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "session/set_mode",
+  "params": {
+    "sessionId": "<redacted-session-id>",
+    "modeId": "ask"
+  }
+}
+```
+
+## Set Mode Notification And Response
+
+Cursor sends a `session/update` notification before the JSON-RPC response for `session/set_mode`, so clients must wait for the matching response id rather than treating the next protocol message as the response.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "<redacted-session-id>",
+    "update": {
+      "sessionUpdate": "current_mode_update",
+      "currentModeId": "ask"
+    }
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {}
+}
+```
+
 ## Findings
 
 - `agent acp` starts successfully in WSL Ubuntu.
@@ -143,6 +185,8 @@ Sensitive values are redacted. The full model list is intentionally omitted beca
 - The existing `build_initialize_request()` shape is accepted.
 - ACP can report auth methods even when the CLI is not logged in.
 - After CLI login, `session/new` succeeds with `cwd` and an empty `mcpServers` list.
+- New sessions currently start in `agent` mode, so TaskBus should explicitly call `session/set_mode` before read-only prompt probes.
+- `session/set_mode` returns a mode update notification before the matching id response.
 - Cursor's current prompt capabilities report `embeddedContext=false`, so TaskBus should prefer text blocks and resource links for the next prompt probe.
 - The first required auth method is `cursor_login`.
 - The probe terminates the process after the first response, so `returncode=143` is expected from termination, not an ACP failure.

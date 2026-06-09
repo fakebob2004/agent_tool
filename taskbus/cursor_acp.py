@@ -308,3 +308,18 @@ def build_prompt_request(
     if message_id is not None:
         params["messageId"] = message_id
     return JsonRpcRequest(id=request_id, method="session/prompt", params=params)
+
+
+def build_set_session_mode_request(
+    session_id: str,
+    mode_id: str,
+    request_id: int | str = 1,
+) -> JsonRpcRequest:
+    return JsonRpcRequest(
+        id=request_id,
+        method="session/set_mode",
+        params={
+            "sessionId": session_id,
+            "modeId": mode_id,
+        },
+    )

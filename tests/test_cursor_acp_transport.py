@@ -14,6 +14,7 @@ from taskbus.cursor_acp import (
     build_initialize_request,
     build_new_session_request,
     build_prompt_request,
+    build_set_session_mode_request,
     embedded_text_resource_content,
     resource_link_content,
     text_content,
@@ -99,6 +100,25 @@ class CursorAcpTransportTests(unittest.TestCase):
                 "sessionId": "sess_abc123def456",
                 "prompt": [{"type": "text", "text": "Inspect only."}],
                 "messageId": "00000000-0000-4000-8000-000000000001",
+            },
+        )
+
+    def test_set_session_mode_request_shape(self) -> None:
+        request = build_set_session_mode_request(
+            session_id="sess_abc123def456",
+            mode_id="ask",
+            request_id=9,
+        )
+        self.assertEqual(
+            request.to_dict(),
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "session/set_mode",
+                "params": {
+                    "sessionId": "sess_abc123def456",
+                    "modeId": "ask",
+                },
             },
         )
 

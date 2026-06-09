@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty, Queue
@@ -15,7 +16,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from taskbus.acp_framing import ContentLengthFramer, FramingError, JsonLinesFramer, MessageFramer
-from taskbus.cursor_acp import JsonRpcRequest, build_initialize_request, build_new_session_request
+from taskbus.cursor_acp import (
+    JsonRpcRequest,
+    build_initialize_request,
+    build_new_session_request,
+    build_set_session_mode_request,
+)
 
 
 def utc_now() -> str:
@@ -77,14 +83,44 @@ def send_request(process: subprocess.Popen[bytes], framer: MessageFramer, output
     process.stdin.flush()
 
 
-def wait_for_message(output: Path, messages: Queue[dict[str, Any]], timeout: float, label: str) -> dict[str, Any] | None:
-    try:
-        message = messages.get(timeout=timeout)
-    except Empty:
-        record(output, "probe_result", {"label": label, "received_message": False, "timeout_seconds": timeout})
-        return None
-    record(output, "probe_result", {"label": label, "received_message": True, "message": message})
-    return message
+def wait_for_response(
+    output: Path,
+    messages: Queue[dict[str, Any]],
+    timeout: float,
+    label: str,
+    request_id: int | str,
+) -> dict[str, Any] | None:
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            record(
+                output,
+                "probe_result",
+                {
+                    "label": label,
+                    "received_response": False,
+                    "request_id": request_id,
+                    "timeout_seconds": timeout,
+                },
+            )
+            return None
+        try:
+            message = messages.get(timeout=remaining)
+        except Empty:
+            continue
+        if message.get("id") == request_id:
+            record(
+                output,
+                "probe_result",
+                {
+                    "label": label,
+                    "received_response": True,
+                    "request_id": request_id,
+                    "message": message,
+                },
+            )
+            return message
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -121,6 +157,11 @@ def main(argv: list[str] | None = None) -> int:
         "--new-session-cwd",
         default=None,
         help="If set, send session/new with this absolute ACP cwd after initialize responds.",
+    )
+    parser.add_argument(
+        "--session-mode",
+        default=None,
+        help="If set with --new-session-cwd, send session/set_mode for the created session.",
     )
     args = parser.parse_args(argv)
 
@@ -159,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     exit_code = 1
     try:
         send_request(process, framer, output, build_initialize_request(request_id=1))
-        initialize_response = wait_for_message(output, messages, args.timeout, "initialize")
+        initialize_response = wait_for_response(output, messages, args.timeout, "initialize", 1)
         if initialize_response is None:
             exit_code = 2
         elif args.new_session_cwd is None:
@@ -171,8 +212,25 @@ def main(argv: list[str] | None = None) -> int:
                 output,
                 build_new_session_request(cwd=args.new_session_cwd, request_id=2),
             )
-            new_session_response = wait_for_message(output, messages, args.timeout, "session/new")
-            exit_code = 0 if new_session_response is not None else 2
+            new_session_response = wait_for_response(output, messages, args.timeout, "session/new", 2)
+            if new_session_response is None:
+                exit_code = 2
+            elif args.session_mode is None:
+                exit_code = 0
+            else:
+                session_id = new_session_response.get("result", {}).get("sessionId")
+                if not isinstance(session_id, str) or not session_id:
+                    record(output, "probe_result", {"label": "session/set_mode", "missing_session_id": True})
+                    exit_code = 3
+                else:
+                    send_request(
+                        process,
+                        framer,
+                        output,
+                        build_set_session_mode_request(session_id=session_id, mode_id=args.session_mode, request_id=3),
+                    )
+                    set_mode_response = wait_for_response(output, messages, args.timeout, "session/set_mode", 3)
+                    exit_code = 0 if set_mode_response is not None else 2
     finally:
         if process.stdin and not process.stdin.closed:
             process.stdin.close()

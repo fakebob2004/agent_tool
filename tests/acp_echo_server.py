@@ -40,6 +40,21 @@ def main() -> int:
                 json.dumps({"jsonrpc": "2.0", "id": data.get("id"), "result": {"ok": True}}),
                 flush=True,
             )
+        elif method == "session/new":
+            print(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": data.get("id"),
+                        "result": {
+                            "method": method,
+                            "params": data.get("params", {}),
+                            "sessionId": "sess_echo",
+                        },
+                    }
+                ),
+                flush=True,
+            )
         else:
             print(
                 json.dumps(

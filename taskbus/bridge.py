@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .codex_liaison import DefaultLiaisonAdapter, build_compact_context
+from .cursor_acp_worker import CursorAcpWorker
 from .cursor_session import CursorSession, DryRunCursorSession, SubprocessCursorSession
 from .events import BridgeEvent, utc_now
 from .evaluator import collect_git_changes, evaluate_worker_result, run_test_commands
@@ -78,6 +79,62 @@ def run_worker(
             "Cursor SDK, Hooks, or agent-specific CLI adapter still needs confirmation.",
         ],
     )
+
+
+def run_cursor_acp(
+    task: dict[str, Any],
+    state_dir: Path | str,
+    repo_root: Path | str,
+    acp_command: str | Sequence[str] = ("agent", "acp"),
+    session_mode: str | None = "agent",
+    trusted_command_roots: list[str] | None = None,
+) -> dict[str, Any]:
+    worker = CursorAcpWorker(
+        acp_command,
+        session_mode=session_mode,
+        trusted_command_roots=trusted_command_roots,
+    )
+    worker_result = worker.run(task, repo_root)
+    worker_completed = worker_result.get("worker_status") == "completed"
+    evaluation = worker_result.get("evaluation", {})
+    evaluation_passed = bool(evaluation.get("passed"))
+    if not worker_completed:
+        status = "worker_failed"
+    elif not evaluation_passed:
+        status = "evaluation_failed"
+    else:
+        status = "succeeded"
+
+    result = {
+        "task_id": task["id"],
+        "status": status,
+        "mode": "cursor-acp",
+        "created_at": utc_now(),
+        "worker": {
+            "completed": worker_completed,
+            "status": worker_result.get("worker_status"),
+            "stop_reason": worker_result.get("stop_reason"),
+            "changed_files": worker_result.get("changed_files", []),
+            "diff_lines": worker_result.get("diff_lines", 0),
+            "error": worker_result.get("error"),
+        },
+        "policy_decisions": worker_result.get("policy_decisions", []),
+        "unknown_acp_updates": worker_result.get("unknown_acp_updates", []),
+        "unknown_agent_requests": worker_result.get("unknown_agent_requests", []),
+        "permission_requests": worker_result.get("permission_requests", []),
+        "tests": worker_result.get("tests", []),
+        "evaluation": evaluation,
+        "summary": "cursor-acp worker ran through ACP transport, policy broker, and evaluator.",
+        "remaining_risks": [
+            "Bridge cursor-acp mode is explicit and not the default.",
+            "Codex liaison and GitHub integration are intentionally not connected.",
+        ],
+    }
+    store = StateStore(state_dir)
+    state_path = store.save(str(task["id"]), result)
+    result["state_path"] = str(state_path)
+    store.save(str(task["id"]), result)
+    return result
 
 
 def _run_session(
@@ -188,18 +245,48 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("task", help="Path to a TaskSpec JSON file.")
     parser.add_argument("--state-dir", default="taskbus/state", help="Directory for state JSON.")
     parser.add_argument("--dry-run", action="store_true", help="Use deterministic dry-run worker.")
+    parser.add_argument(
+        "--worker",
+        choices=["cursor-acp"],
+        help="Run a built-in worker adapter. Currently only cursor-acp.",
+    )
     parser.add_argument("--worker-command", help="Run a real worker command that emits TASKBUS_EVENT lines.")
+    parser.add_argument(
+        "--acp-command",
+        nargs="+",
+        default=["agent", "acp"],
+        help="ACP command for --worker cursor-acp, default: agent acp.",
+    )
+    parser.add_argument(
+        "--session-mode",
+        default="agent",
+        help="ACP session mode for --worker cursor-acp. Use empty string to skip setting a mode.",
+    )
+    parser.add_argument(
+        "--trusted-command-root",
+        action="append",
+        default=[],
+        help="Trusted directory for absolute test interpreter commands in cursor-acp policy.",
+    )
     parser.add_argument("--repo-root", default=".", help="Repository root for worker/evaluator commands.")
     args = parser.parse_args(argv)
 
-    if args.dry_run and args.worker_command:
-        parser.error("Use either --dry-run or --worker-command, not both.")
-    if not args.dry_run and not args.worker_command:
-        parser.error("Specify --dry-run or --worker-command.")
+    selected = sum(bool(value) for value in (args.dry_run, args.worker_command, args.worker))
+    if selected != 1:
+        parser.error("Specify exactly one of --dry-run, --worker-command, or --worker cursor-acp.")
 
     task = load_task(args.task)
     if args.dry_run:
         result = run_dry(task, args.state_dir)
+    elif args.worker == "cursor-acp":
+        result = run_cursor_acp(
+            task,
+            args.state_dir,
+            args.repo_root,
+            args.acp_command,
+            session_mode=args.session_mode or None,
+            trusted_command_roots=args.trusted_command_root,
+        )
     else:
         result = run_worker(task, args.state_dir, args.worker_command, args.repo_root)
     print(json.dumps(result, indent=2, ensure_ascii=False))

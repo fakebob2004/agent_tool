@@ -83,6 +83,74 @@ class JsonRpcNotification:
         return cls(method=method, params=params)
 
 
+@dataclass(frozen=True)
+class AcpSessionUpdate:
+    session_id: str
+    kind: str
+    update: dict[str, Any]
+
+    @property
+    def text_delta(self) -> str | None:
+        if self.kind != "agent_message_chunk":
+            return None
+        content = self.update.get("content")
+        if not isinstance(content, dict):
+            return None
+        if content.get("type") != "text":
+            return None
+        text = content.get("text")
+        return text if isinstance(text, str) else None
+
+    @property
+    def title(self) -> str | None:
+        if self.kind != "session_info_update":
+            return None
+        title = self.update.get("title")
+        return title if isinstance(title, str) else None
+
+
+@dataclass
+class AcpPromptTranscript:
+    text: str = ""
+    stop_reason: str | None = None
+    updates: list[AcpSessionUpdate] = field(default_factory=list)
+
+    def apply_update(self, update: AcpSessionUpdate) -> None:
+        self.updates.append(update)
+        text_delta = update.text_delta
+        if text_delta is not None:
+            self.text += text_delta
+
+    def apply_response(self, response: JsonRpcResponse) -> None:
+        if isinstance(response.result, dict):
+            stop_reason = response.result.get("stopReason")
+            if isinstance(stop_reason, str):
+                self.stop_reason = stop_reason
+
+
+def parse_session_update(message: JsonRpcNotification | dict[str, Any]) -> AcpSessionUpdate:
+    if isinstance(message, JsonRpcNotification):
+        method = message.method
+        params = message.params
+    else:
+        method = message.get("method")
+        params = message.get("params", {})
+    if method != "session/update":
+        raise AcpProtocolError("Expected session/update notification.")
+    if not isinstance(params, dict):
+        raise AcpProtocolError("session/update params must be an object.")
+    session_id = params.get("sessionId")
+    update = params.get("update")
+    if not isinstance(session_id, str) or not session_id:
+        raise AcpProtocolError("session/update missing sessionId.")
+    if not isinstance(update, dict):
+        raise AcpProtocolError("session/update missing update object.")
+    kind = update.get("sessionUpdate")
+    if not isinstance(kind, str) or not kind:
+        raise AcpProtocolError("session/update missing sessionUpdate kind.")
+    return AcpSessionUpdate(session_id=session_id, kind=kind, update=update)
+
+
 class CursorAcpSession:
     """Minimal JSON-RPC-over-stdio transport for a future Cursor ACP adapter."""
 

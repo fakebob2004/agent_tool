@@ -178,6 +178,103 @@ Cursor sends a `session/update` notification before the JSON-RPC response for `s
 }
 ```
 
+## Prompt Request
+
+Captured after switching to `ask` mode. The prompt was intentionally minimal and did not ask Cursor to inspect files.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "session/prompt",
+  "params": {
+    "sessionId": "<redacted-session-id>",
+    "prompt": [
+      {
+        "type": "text",
+        "text": "Reply exactly TASKBUS_ACP_OK. Do not read files or inspect the repository."
+      }
+    ]
+  }
+}
+```
+
+## Prompt Updates And Response
+
+Cursor may emit multiple `session/update` notifications before the final response. The observed update sequence was:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "<redacted-session-id>",
+    "update": {
+      "sessionUpdate": "available_commands_update",
+      "availableCommands": "<redacted-command-list>"
+    }
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "<redacted-session-id>",
+    "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "TASK"
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "<redacted-session-id>",
+    "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "BUS_ACP_OK"
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "<redacted-session-id>",
+    "update": {
+      "sessionUpdate": "session_info_update",
+      "title": "Taskbus Acp Ok"
+    }
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "stopReason": "end_turn"
+  }
+}
+```
+
 ## Findings
 
 - `agent acp` starts successfully in WSL Ubuntu.
@@ -188,9 +285,11 @@ Cursor sends a `session/update` notification before the JSON-RPC response for `s
 - New sessions currently start in `agent` mode, so TaskBus should explicitly call `session/set_mode` before read-only prompt probes.
 - `session/set_mode` returns a mode update notification before the matching id response.
 - Cursor's current prompt capabilities report `embeddedContext=false`, so TaskBus should prefer text blocks and resource links for the next prompt probe.
+- A minimal `ask` mode `session/prompt` succeeds and returns streamed `agent_message_chunk` notifications before the final `stopReason=end_turn` response.
+- Agent text chunks must be concatenated in arrival order to reconstruct the assistant message.
 - The first required auth method is `cursor_login`.
 - The probe terminates the process after the first response, so `returncode=143` is expected from termination, not an ACP failure.
 
 ## Next Boundary
 
-Do not map business events yet. Next work should be limited to one explicit read-only `session/prompt` round trip in `ask` or `plan` mode, then a small parser for `session/update` notifications and prompt stop reasons.
+Do not map business events yet. Next work should be a small parser for `session/update` notifications and prompt stop reasons, followed by a guarded adapter that can run only read-only `ask` mode prompts until permission mapping is implemented.

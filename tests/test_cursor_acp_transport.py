@@ -9,6 +9,7 @@ from typing import Any
 
 from taskbus.cursor_acp import (
     AcpProtocolError,
+    AcpPromptTranscript,
     CursorAcpSession,
     JsonRpcResponse,
     build_initialize_request,
@@ -16,6 +17,7 @@ from taskbus.cursor_acp import (
     build_prompt_request,
     build_set_session_mode_request,
     embedded_text_resource_content,
+    parse_session_update,
     resource_link_content,
     text_content,
 )
@@ -121,6 +123,61 @@ class CursorAcpTransportTests(unittest.TestCase):
                 },
             },
         )
+
+    def test_parse_session_update_text_chunks(self) -> None:
+        first = parse_session_update(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sess_abc123def456",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "TASK"},
+                    },
+                },
+            }
+        )
+        second = parse_session_update(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sess_abc123def456",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "BUS_ACP_OK"},
+                    },
+                },
+            }
+        )
+        transcript = AcpPromptTranscript()
+        transcript.apply_update(first)
+        transcript.apply_update(second)
+        transcript.apply_response(JsonRpcResponse(id=4, result={"stopReason": "end_turn"}))
+
+        self.assertEqual(transcript.text, "TASKBUS_ACP_OK")
+        self.assertEqual(transcript.stop_reason, "end_turn")
+
+    def test_parse_session_update_title_and_validation(self) -> None:
+        update = parse_session_update(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sess_abc123def456",
+                    "update": {
+                        "sessionUpdate": "session_info_update",
+                        "title": "Taskbus Acp Ok",
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(update.title, "Taskbus Acp Ok")
+        self.assertIsNone(update.text_delta)
+        with self.assertRaises(AcpProtocolError):
+            parse_session_update({"jsonrpc": "2.0", "method": "other", "params": {}})
 
     def test_request_response_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

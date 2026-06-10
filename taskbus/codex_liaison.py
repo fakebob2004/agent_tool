@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,19 @@ class LiaisonDecisionError(ValueError):
 
 class CodexLiaisonError(RuntimeError):
     pass
+
+
+ALLOWED_LIAISON_DECISIONS = frozenset(
+    {
+        "continue",
+        "reply",
+        "keep_api",
+        "preserve_existing_contract",
+        "preserve_empty_input_value_error",
+        "use_module_local_cache",
+        "escalate",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -77,16 +91,27 @@ class CodexCliLiaisonAdapter:
         *,
         cwd: Path | str | None = None,
         timeout: float = 120.0,
+        capture_last_message: bool = False,
     ) -> None:
         self.command = command
         self.cwd = Path(cwd) if cwd is not None else None
         self.timeout = timeout
+        self.capture_last_message = capture_last_message
 
     def answer(self, context: CompactContext) -> LiaisonDecision:
         prompt = build_liaison_prompt(context)
+        output_path: Path | None = None
+        command = self.command
+        if self.capture_last_message:
+            if isinstance(command, str):
+                raise CodexLiaisonError("capture_last_message requires command to be a list.")
+            handle = tempfile.NamedTemporaryFile(prefix="taskbus-codex-liaison-", suffix=".txt", delete=False)
+            handle.close()
+            output_path = Path(handle.name)
+            command = [*command, "--output-last-message", str(output_path)]
         try:
             completed = subprocess.run(
-                self.command,
+                command,
                 cwd=self.cwd,
                 input=prompt,
                 text=True,
@@ -95,13 +120,24 @@ class CodexCliLiaisonAdapter:
                 timeout=self.timeout,
             )
         except subprocess.TimeoutExpired as exc:
+            if output_path is not None:
+                output_path.unlink(missing_ok=True)
             raise CodexLiaisonError(f"Codex liaison command timed out after {self.timeout} seconds.") from exc
 
-        if completed.returncode != 0:
-            stderr = completed.stderr.strip()
-            raise CodexLiaisonError(stderr or f"Codex liaison command failed with exit code {completed.returncode}.")
+        try:
+            if completed.returncode != 0:
+                stderr = completed.stderr.strip()
+                raise CodexLiaisonError(
+                    stderr or f"Codex liaison command failed with exit code {completed.returncode}."
+                )
 
-        return parse_liaison_decision(_extract_json_object(completed.stdout))
+            output = completed.stdout
+            if output_path is not None:
+                output = output_path.read_text(encoding="utf-8")
+            return parse_liaison_decision(_extract_json_object(output))
+        finally:
+            if output_path is not None:
+                output_path.unlink(missing_ok=True)
 
 
 def build_compact_context(
@@ -138,9 +174,10 @@ def build_liaison_prompt(context: CompactContext) -> str:
         "You are a short-context Codex liaison for TaskBus.\n"
         "Answer only the semantic question. Do not edit files, run commands, or ask follow-up questions.\n"
         "Return exactly one JSON object with these keys:\n"
-        '- "decision": short snake_case decision label\n'
+        '- "decision": one of continue, reply, keep_api, preserve_existing_contract, '
+        'preserve_empty_input_value_error, use_module_local_cache, escalate\n'
         '- "instruction_to_cursor": concrete instruction for the same Cursor ACP session\n'
-        '- "escalate": boolean, true only when a human must decide\n'
+        '- "escalate": boolean, true only when a human must decide. If omitted, false is assumed\n'
         '- "reason_summary": one short sentence\n\n'
         "Compact context JSON:\n"
         f"{json.dumps(context.to_dict(), ensure_ascii=False, indent=2)}\n"
@@ -157,7 +194,9 @@ def parse_liaison_decision(text: str) -> LiaisonDecision:
         raise LiaisonDecisionError("Liaison output must be a JSON object.")
 
     data = _normalize_decision_keys(data)
-    missing = [key for key in ("decision", "instruction_to_cursor", "escalate") if key not in data]
+    if "escalate" not in data:
+        data["escalate"] = False
+    missing = [key for key in ("decision", "instruction_to_cursor") if key not in data]
     if missing:
         raise LiaisonDecisionError("Liaison output missing required key(s): " + ", ".join(missing))
 
@@ -168,6 +207,10 @@ def parse_liaison_decision(text: str) -> LiaisonDecision:
     instruction = str(data["instruction_to_cursor"]).strip()
     if not decision:
         raise LiaisonDecisionError("Liaison key 'decision' must not be empty.")
+    if decision not in ALLOWED_LIAISON_DECISIONS:
+        raise LiaisonDecisionError(
+            "Liaison key 'decision' must be one of: " + ", ".join(sorted(ALLOWED_LIAISON_DECISIONS))
+        )
     if not instruction:
         raise LiaisonDecisionError("Liaison key 'instruction_to_cursor' must not be empty.")
 

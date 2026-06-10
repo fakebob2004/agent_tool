@@ -90,7 +90,11 @@ def run_cursor_acp(
     trusted_command_roots: list[str] | None = None,
     liaison_command: str | list[str] | None = None,
 ) -> dict[str, Any]:
-    liaison = CodexCliLiaisonAdapter(liaison_command, cwd=repo_root) if liaison_command else None
+    liaison = (
+        CodexCliLiaisonAdapter(liaison_command, cwd=repo_root, capture_last_message=True)
+        if liaison_command
+        else None
+    )
     worker = CursorAcpWorker(
         acp_command,
         session_mode=session_mode,

@@ -36,14 +36,14 @@ class CodexLiaisonTests(unittest.TestCase):
         decision = parse_liaison_decision(
             json.dumps(
                 {
-                    "decision": "keep_api",
+                    "decision": "continue",
                     "instruction_to_cursor": "Preserve public API.",
                     "escalate": False,
                     "reason_summary": "Compatibility is required.",
                 }
             )
         )
-        self.assertEqual(decision.decision, "keep_api")
+        self.assertEqual(decision.decision, "continue")
 
     def test_parse_rejects_missing_required_key(self) -> None:
         with self.assertRaises(LiaisonDecisionError):
@@ -55,12 +55,24 @@ class CodexLiaisonTests(unittest.TestCase):
                 {
                     "action": "reply",
                     "instruction": "Use the module-local cache.",
-                    "escalate": False,
                 }
             )
         )
         self.assertEqual(decision.decision, "reply")
         self.assertEqual(decision.instruction_to_cursor, "Use the module-local cache.")
+        self.assertFalse(decision.escalate)
+
+    def test_parse_rejects_unknown_decision(self) -> None:
+        with self.assertRaises(LiaisonDecisionError):
+            parse_liaison_decision(
+                json.dumps(
+                    {
+                        "decision": "maybe",
+                        "instruction_to_cursor": "Do something.",
+                        "escalate": False,
+                    }
+                )
+            )
 
     def test_default_adapter_uses_event_default(self) -> None:
         event = BridgeEvent(
@@ -113,6 +125,32 @@ class CodexLiaisonTests(unittest.TestCase):
 
             with self.assertRaises(LiaisonDecisionError):
                 adapter.answer(context)
+
+    def test_codex_cli_adapter_can_parse_output_last_message_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "last_message_liaison.py"
+            script.write_text(
+                "import json, sys\n"
+                "output_path = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
+                "open(output_path, 'w', encoding='utf-8').write(json.dumps({\n"
+                "    'decision': 'continue',\n"
+                "    'instruction_to_cursor': 'Preserve ValueError for empty input.',\n"
+                "    'reason_summary': 'Tests define compatibility.'\n"
+                "}))\n"
+                "print('noisy stdout that should be ignored')\n",
+                encoding="utf-8",
+            )
+            event = BridgeEvent(type="semantic_question", message="Question?", payload={})
+            context = build_compact_context({"id": "task-1"}, event, {})
+            adapter = CodexCliLiaisonAdapter(
+                [sys.executable, str(script)],
+                timeout=10,
+                capture_last_message=True,
+            )
+            decision = adapter.answer(context)
+
+        self.assertEqual(decision.decision, "continue")
+        self.assertEqual(decision.instruction_to_cursor, "Preserve ValueError for empty input.")
 
     def test_codex_cli_adapter_reports_process_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

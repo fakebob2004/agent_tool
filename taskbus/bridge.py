@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from .codex_liaison import DefaultLiaisonAdapter, build_compact_context
+from .codex_liaison import CodexCliLiaisonAdapter, DefaultLiaisonAdapter, build_compact_context
 from .cursor_acp_worker import CursorAcpWorker
 from .cursor_session import CursorSession, DryRunCursorSession, SubprocessCursorSession
 from .events import BridgeEvent, utc_now
@@ -88,11 +88,14 @@ def run_cursor_acp(
     acp_command: str | Sequence[str] = ("agent", "acp"),
     session_mode: str | None = "agent",
     trusted_command_roots: list[str] | None = None,
+    liaison_command: str | list[str] | None = None,
 ) -> dict[str, Any]:
+    liaison = CodexCliLiaisonAdapter(liaison_command, cwd=repo_root) if liaison_command else None
     worker = CursorAcpWorker(
         acp_command,
         session_mode=session_mode,
         trusted_command_roots=trusted_command_roots,
+        liaison=liaison,
     )
     worker_result = worker.run(task, repo_root)
     worker_completed = worker_result.get("worker_status") == "completed"
@@ -127,7 +130,8 @@ def run_cursor_acp(
         "summary": "cursor-acp worker ran through ACP transport, policy broker, and evaluator.",
         "remaining_risks": [
             "Bridge cursor-acp mode is explicit and not the default.",
-            "Codex liaison and GitHub integration are intentionally not connected.",
+            "Real Codex liaison is used only when --liaison-command is provided.",
+            "GitHub integration is intentionally not connected.",
         ],
     }
     store = StateStore(state_dir)
@@ -268,6 +272,11 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Trusted directory for absolute test interpreter commands in cursor-acp policy.",
     )
+    parser.add_argument(
+        "--liaison-command",
+        nargs="+",
+        help="Command for a short-context Codex liaison process in --worker cursor-acp mode.",
+    )
     parser.add_argument("--repo-root", default=".", help="Repository root for worker/evaluator commands.")
     args = parser.parse_args(argv)
 
@@ -286,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
             args.acp_command,
             session_mode=args.session_mode or None,
             trusted_command_roots=args.trusted_command_root,
+            liaison_command=args.liaison_command,
         )
     else:
         result = run_worker(task, args.state_dir, args.worker_command, args.repo_root)

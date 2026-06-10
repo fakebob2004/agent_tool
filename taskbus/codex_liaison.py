@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .events import BridgeEvent
 
 
 class LiaisonDecisionError(ValueError):
+    pass
+
+
+class CodexLiaisonError(RuntimeError):
     pass
 
 
@@ -62,6 +68,42 @@ class DefaultLiaisonAdapter:
         )
 
 
+class CodexCliLiaisonAdapter:
+    """Runs a short-context Codex process and parses its JSON decision."""
+
+    def __init__(
+        self,
+        command: str | list[str],
+        *,
+        cwd: Path | str | None = None,
+        timeout: float = 120.0,
+    ) -> None:
+        self.command = command
+        self.cwd = Path(cwd) if cwd is not None else None
+        self.timeout = timeout
+
+    def answer(self, context: CompactContext) -> LiaisonDecision:
+        prompt = build_liaison_prompt(context)
+        try:
+            completed = subprocess.run(
+                self.command,
+                cwd=self.cwd,
+                input=prompt,
+                text=True,
+                capture_output=True,
+                shell=isinstance(self.command, str),
+                timeout=self.timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CodexLiaisonError(f"Codex liaison command timed out after {self.timeout} seconds.") from exc
+
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip()
+            raise CodexLiaisonError(stderr or f"Codex liaison command failed with exit code {completed.returncode}.")
+
+        return parse_liaison_decision(_extract_json_object(completed.stdout))
+
+
 def build_compact_context(
     task: dict[str, Any],
     event: BridgeEvent,
@@ -91,6 +133,20 @@ def build_compact_context(
     )
 
 
+def build_liaison_prompt(context: CompactContext) -> str:
+    return (
+        "You are a short-context Codex liaison for TaskBus.\n"
+        "Answer only the semantic question. Do not edit files, run commands, or ask follow-up questions.\n"
+        "Return exactly one JSON object with these keys:\n"
+        '- "decision": short snake_case decision label\n'
+        '- "instruction_to_cursor": concrete instruction for the same Cursor ACP session\n'
+        '- "escalate": boolean, true only when a human must decide\n'
+        '- "reason_summary": one short sentence\n\n'
+        "Compact context JSON:\n"
+        f"{json.dumps(context.to_dict(), ensure_ascii=False, indent=2)}\n"
+    )
+
+
 def parse_liaison_decision(text: str) -> LiaisonDecision:
     try:
         data = json.loads(text)
@@ -100,11 +156,8 @@ def parse_liaison_decision(text: str) -> LiaisonDecision:
     if not isinstance(data, dict):
         raise LiaisonDecisionError("Liaison output must be a JSON object.")
 
-    missing = [
-        key
-        for key in ("decision", "instruction_to_cursor", "escalate", "reason_summary")
-        if key not in data
-    ]
+    data = _normalize_decision_keys(data)
+    missing = [key for key in ("decision", "instruction_to_cursor", "escalate") if key not in data]
     if missing:
         raise LiaisonDecisionError("Liaison output missing required key(s): " + ", ".join(missing))
 
@@ -122,8 +175,42 @@ def parse_liaison_decision(text: str) -> LiaisonDecision:
         decision=decision,
         instruction_to_cursor=instruction,
         escalate=data["escalate"],
-        reason_summary=str(data["reason_summary"]).strip(),
+        reason_summary=str(data.get("reason_summary", "")).strip(),
     )
+
+
+def _normalize_decision_keys(data: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(data)
+    if "decision" not in normalized and "action" in normalized:
+        normalized["decision"] = normalized["action"]
+    if "instruction_to_cursor" not in normalized and "instruction" in normalized:
+        normalized["instruction_to_cursor"] = normalized["instruction"]
+    return normalized
+
+
+def _extract_json_object(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        raise LiaisonDecisionError("Liaison output is empty.")
+    try:
+        json.loads(stripped)
+        return stripped
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(stripped):
+        if char != "{":
+            continue
+        try:
+            _, end = decoder.raw_decode(stripped[index:])
+        except json.JSONDecodeError:
+            continue
+        candidate = stripped[index : index + end]
+        trailing = stripped[index + end :].strip()
+        if not trailing or trailing.startswith(("```", "\n")):
+            return candidate
+    raise LiaisonDecisionError("Liaison output does not contain a JSON object.")
 
 
 def _trim(value: str, limit: int = 4000) -> str:

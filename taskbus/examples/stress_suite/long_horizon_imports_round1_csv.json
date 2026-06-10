@@ -1,0 +1,23 @@
+{
+  "id": "long_horizon_imports_round1_csv",
+  "objective": "Add CSV import support while preserving the existing import_data(path) interface.",
+  "scope": {
+    "allowed_paths": ["importer.py", "tests/**"],
+    "forbidden_paths": ["pyproject.toml", "requirements.txt"]
+  },
+  "acceptance": [
+    "CSV files import into the existing record structure.",
+    "Existing behavior remains compatible.",
+    "Tests cover the new CSV path."
+  ],
+  "test_commands": ["python tests/test_importer.py"],
+  "limits": {
+    "max_changed_files": 2,
+    "max_diff_lines": 120
+  },
+  "stress_expectations": {
+    "round": 1,
+    "reset_repo_before_run": true,
+    "historical_tests_pass": true
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "long_horizon_imports_round2_json",
+  "objective": "Add JSON import support while preserving the same import_data(path) interface introduced before.",
+  "scope": {
+    "allowed_paths": ["importer.py", "tests/**"],
+    "forbidden_paths": ["pyproject.toml", "requirements.txt"]
+  },
+  "acceptance": [
+    "JSON files import into the same record structure as CSV files.",
+    "CSV import tests from the previous round still pass.",
+    "The implementation avoids duplicating parser logic."
+  ],
+  "test_commands": ["python tests/test_importer.py"],
+  "limits": {
+    "max_changed_files": 2,
+    "max_diff_lines": 140
+  },
+  "stress_expectations": {
+    "round": 2,
+    "reset_repo_before_run": false,
+    "historical_tests_pass": true
+  }
+}

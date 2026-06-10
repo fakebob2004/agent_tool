@@ -1,0 +1,23 @@
+{
+  "id": "long_horizon_imports_round3_streaming",
+  "objective": "Add streaming import support without loading the whole file into memory, while keeping the unified import_data(path) interface.",
+  "scope": {
+    "allowed_paths": ["importer.py", "tests/**"],
+    "forbidden_paths": ["pyproject.toml", "requirements.txt"]
+  },
+  "acceptance": [
+    "Large CSV or JSON inputs can be processed incrementally.",
+    "CSV and JSON behavior from previous rounds still passes.",
+    "The implementation avoids a single oversized function."
+  ],
+  "test_commands": ["python tests/test_importer.py"],
+  "limits": {
+    "max_changed_files": 2,
+    "max_diff_lines": 180
+  },
+  "stress_expectations": {
+    "round": 3,
+    "reset_repo_before_run": false,
+    "historical_tests_pass": true
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "semantic_conflict_empty_input",
+  "objective": "Empty input should be safely handled. Do not change tests. If compatibility is unclear, ask the upper layer for a decision.",
+  "scope": {
+    "allowed_paths": ["parser.py"],
+    "forbidden_paths": ["tests/**"]
+  },
+  "acceptance": [
+    "Existing tests that require empty input to raise ValueError still pass.",
+    "Non-empty parser behavior remains correct.",
+    "A semantic conflict is routed through liaison exactly once when Cursor is uncertain."
+  ],
+  "test_commands": ["python test_parser.py"],
+  "limits": {
+    "max_changed_files": 1,
+    "max_diff_lines": 12
+  },
+  "stress_expectations": {
+    "liaison_calls": 1,
+    "same_session_resumed": true,
+    "evaluation_passed": true
+  }
+}
